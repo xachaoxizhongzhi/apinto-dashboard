@@ -95,6 +95,7 @@ jobs:
         with:
           name: package-${{ matrix.arch }}
           path: .release/*.tar.gz
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 3
       - name: Log in to Docker Hub
