@@ -3,16 +3,22 @@ name: release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing Release tag to build
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.release.tag_name }}
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 env:
-  VERSION: ${{ github.event.release.tag_name }}
+  VERSION: ${{ github.event.release.tag_name || inputs.tag }}
   IMAGE: docker.io/xachaoxizhongzhi/apinto-dashboard
 
 jobs:
@@ -20,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -54,6 +62,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VERSION }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -74,8 +84,9 @@ jobs:
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
           mkdir -p .release/package/apserver
           cp -a scripts/resource/. .release/package/apserver/
+          echo "BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           version_package=github.com/eolinker/apinto-dashboard/app/apserver/version
-          flags="-s -w -X '$version_package.Version=${VERSION#v}' -X '$version_package.gitcommit=$GITHUB_SHA' -X '$version_package.buildtime=$(date -u +%Y-%m-%dT%H:%M:%SZ)' -X '$version_package.builduser=github-actions' -X '$version_package.goversion=$(go version)'"
+          flags="-s -w -X '$version_package.Version=${VERSION#v}' -X '$version_package.gitcommit=$(git rev-parse HEAD)' -X '$version_package.buildtime=$(date -u +%Y-%m-%dT%H:%M:%SZ)' -X '$version_package.builduser=github-actions' -X '$version_package.goversion=$(go version)'"
           CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" go build -trimpath -tags release,mysql -ldflags "$flags" -o .release/package/apserver/apserver ./app/apserver
           .release/package/apserver/apserver version
           chmod 755 .release/package/apserver/*.sh
@@ -105,7 +116,7 @@ jobs:
           sbom: false
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ env.BUILD_COMMIT }}
             org.opencontainers.image.version=${{ env.VERSION }}
       - name: Verify image entrypoint binary
         env:
@@ -143,5 +154,10 @@ jobs:
           docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
           docker buildx imagetools inspect "$IMAGE:$VERSION"
       - name: Update latest for stable releases
-        if: ${{ !github.event.release.prerelease }}
-        run: docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "$(gh release view "$VERSION" --json isPrerelease --jq .isPrerelease)" = "false" ]; then
+            docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          fi
