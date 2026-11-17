@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 set -e
 
@@ -36,5 +36,4 @@ echo -e "  log_level: ${ERROR_LOG_LEVEL}" >> config.yml
 echo -e "  log_expire: ${ERROR_EXPIRE}" >> config.yml
 echo -e "  log_period: ${ERROR_PERIOD}" >> config.yml
 
-cat config.yml
-./apserver
+exec ./apserver

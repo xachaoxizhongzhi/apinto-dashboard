@@ -1,22 +1,7 @@
-# 名称：apinto通用镜像
-# 创建时间：2022-10-25
-FROM centos:7.9.2009
-MAINTAINER liujian
-
+FROM alpine:3.22
+RUN apk add --no-cache bash ca-certificates tzdata
 ENV TZ=Asia/Shanghai
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-ARG APP
-ARG VERSION
-ARG DIR
-ARG BUILD_ARCH
-
-RUN mkdir -p /${APP}
-
-COPY ${DIR}/${APP}_${VERSION}_linux_${BUILD_ARCH}.tar.gz /${APP}
-
-RUN cd /${APP} && tar -zxvf ${APP}_${VERSION}_linux_${BUILD_ARCH}.tar.gz && rm -rf ${APP}_${VERSION}_linux_${BUILD_ARCH}.tar.gz && ln -snF ${APP}_${VERSION} ${APP}
-
-WORKDIR /$APP/$APP
-
-CMD ./docker_run.sh
+WORKDIR /apserver
+COPY apserver/ /apserver/
+EXPOSE 8080
+CMD ["bash", "/apserver/docker_run.sh"]
