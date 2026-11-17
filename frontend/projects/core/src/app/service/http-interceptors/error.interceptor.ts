@@ -12,6 +12,9 @@ import { EoNgNavigationService } from '../eo-ng-navigation.service'
 import { PluginEventHubService } from '../plugin-event-hub.service'
 import { EoNgMessageService } from '../eo-ng-message.service'
 
+// Contract file paths and plugin configuration keys are opaque, not DTO field names.
+const isContractRequest = (url:string):boolean => /\/api\/upstream\/[^/?]+\/contract(?:[/?]|$)/.test(url)
+
 // 判断对象是否需要做变量名转化，如果是表单对象、文件流等就不做处理
 const isJsonObject:(obj: any)=> boolean = (obj:any) => {
   // 首先确保它是一个对象
@@ -69,7 +72,7 @@ export class ErrorInterceptor implements HttpInterceptor {
             map((res:any) => {
               event = res.res
 
-              if (!request.url.includes('api/dynamic/')) {
+              if (!request.url.includes('api/dynamic/') && !isContractRequest(request.url)) {
                 try {
                   event.body.data = this.camel(event.body.data)
                 } catch {
@@ -120,6 +123,9 @@ export class ErrorInterceptor implements HttpInterceptor {
   }
 
   handleRequest (request: HttpRequest<unknown>) {
+    if (isContractRequest(request.url)) {
+      return request.clone({params:request.params.set('namespace', 'default')})
+    }
     if (request.url.startsWith('dynamic') || request.url.startsWith('/api/dynamic')) {
       return request
     }

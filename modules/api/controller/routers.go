@@ -9,8 +9,15 @@ import (
 
 func initRouter(name string) apinto_module.RoutersInfo {
 	c := newApiController()
+	contract := newContractController()
 	g := group_controller.NewCommonGroupController()
 	return []apinto_module.RouterInfo{
+		{Method: http.MethodGet, Path: "/api/upstream/:upstream/contract", HandlerFunc: contract.info},
+		{Method: http.MethodPost, Path: "/api/upstream/:upstream/contract", HandlerFunc: contract.update},
+		{Method: http.MethodPost, Path: "/api/upstream/:upstream/contract/api", HandlerFunc: contract.createAPI},
+		{Method: http.MethodPut, Path: "/api/upstream/:upstream/contract/file", HandlerFunc: contract.edit},
+		{Method: http.MethodPost, Path: "/api/upstream/:upstream/contract/restore", HandlerFunc: contract.restore},
+		{Method: http.MethodPost, Path: "/api/upstream/:upstream/contract/publish", HandlerFunc: contract.publish},
 
 		{
 			Method: http.MethodGet,

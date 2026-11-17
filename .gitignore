@@ -64,3 +64,6 @@ vender
 /builds/
 *.tar.gz
 /all/
+
+# Local development configuration, data, logs and backups
+/.local/

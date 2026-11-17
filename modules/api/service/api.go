@@ -41,6 +41,7 @@ import (
 	"github.com/eolinker/apinto-dashboard/modules/namespace"
 	"github.com/eolinker/apinto-dashboard/modules/openapp"
 	"github.com/eolinker/apinto-dashboard/modules/openapp/open-app-model"
+	"github.com/eolinker/apinto-dashboard/modules/plugin"
 	"github.com/eolinker/apinto-dashboard/modules/plugin_template"
 	"github.com/eolinker/apinto-dashboard/modules/user"
 	"github.com/eolinker/eosc/common/bean"
@@ -57,13 +58,15 @@ const (
 )
 
 type apiService struct {
-	apiStore          apiStore.IAPIStore
-	apiStat           apiStore.IAPIStatStore
-	apiVersion        apiStore.IAPIVersionStore
-	quoteStore        quote_store.IQuoteStore
-	apiHistory        apiStore.IApiHistoryStore
-	apiPublishHistory apiStore.IApiPublishHistoryStore
-	dynamicService    dynamic.IDynamicService
+	contractPlugins       plugin.IClusterPluginService
+	contractPluginCatalog plugin.IPluginService
+	apiStore              apiStore.IAPIStore
+	apiStat               apiStore.IAPIStatStore
+	apiVersion            apiStore.IAPIVersionStore
+	quoteStore            quote_store.IQuoteStore
+	apiHistory            apiStore.IApiHistoryStore
+	apiPublishHistory     apiStore.IApiPublishHistoryStore
+	dynamicService        dynamic.IDynamicService
 
 	commonGroup      group.ICommonGroupService
 	clusterService   cluster.IClusterService
@@ -83,6 +86,8 @@ type apiService struct {
 
 func NewAPIService() apiservice.IAPIService {
 	as := &apiService{}
+	bean.Autowired(&as.contractPlugins)
+	bean.Autowired(&as.contractPluginCatalog)
 	bean.Autowired(&as.apiStore)
 	bean.Autowired(&as.apiStat)
 	bean.Autowired(&as.apiVersion)
@@ -636,7 +641,14 @@ func (a *apiService) CreateAPI(ctx context.Context, namespaceID int, operator in
 		apiInfo.Protocols = strings.Join(input.Protocols, ",")
 	}
 
+	if ctx.Value(contractSyncKey{}) != nil {
+		apiInfo.Version = t.Format("20060102150405.000000000")
+	}
+
 	err = a.apiStore.Transaction(ctx, func(txCtx context.Context) error {
+		if err = a.normalizeContractInput(txCtx, namespaceID, input); err != nil {
+			return err
+		}
 		if err = a.apiStore.Save(txCtx, apiInfo); err != nil {
 			return err
 		}
@@ -801,6 +813,9 @@ func (a *apiService) UpdateAPI(ctx context.Context, namespaceID int, operator in
 	})
 
 	return a.apiStore.Transaction(ctx, func(txCtx context.Context) error {
+		if err = a.normalizeContractInput(txCtx, namespaceID, input); err != nil {
+			return err
+		}
 		plugins := make([]*apientry.APIPlugin, 0, len(input.Plugins))
 		for _, p := range input.Plugins {
 			plugins = append(plugins, &apientry.APIPlugin{
@@ -957,6 +972,7 @@ func (a *apiService) DeleteAPI(ctx context.Context, namespaceId, operator int, u
 }
 
 func (a *apiService) BatchOnline(ctx context.Context, namespaceId int, operator int, onlineToken string) ([]*apimodel.BatchListItem, error) {
+	ctx = withContractPublish(ctx)
 	//判断uuid和operator是一致的
 	key := onlineToken
 	task, err := a.batchApiCache.Get(ctx, key)
@@ -1066,6 +1082,18 @@ func (a *apiService) online(ctx context.Context, namespaceId, operator int, api 
 		return onlineList, nil
 	}
 
+	// Resolve one exact version for every target cluster, not the latest per loop.
+	latest, err := a.GetLatestAPIVersion(ctx, api.Id)
+	if state, _ := ctx.Value(contractPublishContextKey).(*contractPublishState); state != nil {
+		if pinned, ok := state.pinned[api.UUID]; ok {
+			api = pinned.API
+			latest = pinned.Version
+			err = nil
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
 	for _, clusterInfo := range clusterList {
 		item := &apimodel.BatchListItem{
 			APIName:    api.Name,
@@ -1078,14 +1106,6 @@ func (a *apiService) online(ctx context.Context, namespaceId, operator int, api 
 		if clusterInfo.Status == 3 {
 			item.Status = false
 			item.Result = "集群状态异常"
-			onlineList = append(onlineList, item)
-			continue
-		}
-
-		latest, err := a.GetLatestAPIVersion(ctx, api.Id)
-		if err != nil {
-			item.Status = false
-			item.Result = err.Error()
 			onlineList = append(onlineList, item)
 			continue
 		}
@@ -1109,6 +1129,12 @@ func (a *apiService) online(ctx context.Context, namespaceId, operator int, api 
 			}
 		}
 
+		if err = a.ensureAPIContracts(ctx, namespaceId, clusterInfo, latest); err != nil {
+			item.Status = false
+			item.Result = err.Error()
+			onlineList = append(onlineList, item)
+			continue
+		}
 		err = a.apiStore.Transaction(ctx, func(txCtx context.Context) error {
 			//封装router配置
 			apiDriverInfo := a.GetAPIDriver(api.Scheme)
@@ -1295,8 +1321,7 @@ func (a *apiService) BatchOnlineCheck(ctx context.Context, namespaceId int, oper
 	apiList := make([]*apientry.API, 0, len(apiUUIDs))
 	apiIds := make([]int, 0, len(apiUUIDs))
 
-	groupInfo, _ := errgroup.WithContext(ctx)
-	groupInfo.Go(func() error {
+	loadAPIs := func() error {
 		for _, uid := range apiUUIDs {
 			api, err := a.apiStore.GetByUUID(ctx, namespaceId, uid)
 			if err != nil {
@@ -1310,16 +1335,16 @@ func (a *apiService) BatchOnlineCheck(ctx context.Context, namespaceId int, oper
 		}
 		return nil
 
-	})
+	}
 
 	clusterList := make([]*cluster_model.Cluster, 0, len(clusterNames))
-	groupInfo.Go(func() error {
+	loadClusters := func() error {
 		var err error
 		clusterList, err = a.clusterService.QueryListByClusterNames(ctx, namespaceId, clusterNames)
 		return err
-	})
+	}
 
-	if err := groupInfo.Wait(); err != nil {
+	if err := a.batchRead(ctx, loadAPIs, loadClusters); err != nil {
 		return nil, "", err
 	}
 
@@ -1479,6 +1504,7 @@ func (a *apiService) OnlineInfo(ctx context.Context, namespaceId int, uuid strin
 }
 
 func (a *apiService) OnlineAPI(ctx context.Context, namespaceId, operator int, uuid string, clusterNames []string) ([]*frontend_model.Router, error) {
+	ctx = withContractPublish(ctx)
 	apiInfo, err := a.apiStore.GetByUUID(ctx, namespaceId, uuid)
 	if err != nil {
 		return nil, err
@@ -1543,6 +1569,10 @@ func (a *apiService) OnlineAPI(ctx context.Context, namespaceId, operator int, u
 			}
 		}
 
+		if err = a.ensureAPIContracts(ctx, namespaceId, clusterInfo, latestVersion); err != nil {
+			routerInfos = append(routerInfos, &frontend_model.Router{Msg: fmt.Sprintf("契约资源准备失败: %s", err)})
+			continue
+		}
 		//事务
 		err = a.apiStore.Transaction(ctx, func(txCtx context.Context) error {
 			routerConfig := apiDriverInfo.ToApinto(apiInfo.UUID, apiInfo.Desc, apiInfo.IsDisable, latestVersion.Protocols, latestVersion.Method, latestVersion.RequestPath, latestVersion.RequestPathLabel, latestVersion.ProxyPath, serviceID, latestVersion.Timeout, latestVersion.Retry, latestVersion.Hosts, latestVersion.Match, latestVersion.Header, latestVersion.TemplateUUID, latestVersion.Plugins)
@@ -2104,6 +2134,13 @@ func (a *apiService) GetLatestAPIVersion(ctx context.Context, apiId int) (*apien
 }
 
 func checkHostRepeat(hostMap map[string]struct{}, hosts []string, path string, method string) error {
+	filtered := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		if host != "" {
+			filtered = append(filtered, host)
+		}
+	}
+	hosts = filtered
 	// 查重Host是否重复
 	if len(hostMap) > 0 {
 		for _, host := range hosts {
@@ -2144,6 +2181,11 @@ func (a *apiService) CheckAPIReDuplicative(ctx context.Context, namespaceID int,
 		return method
 	})
 	for _, api := range apiList {
+		// Contract synchronization checks the complete desired set, excluding its old drafts.
+		ignored, _ := ctx.Value(contractSyncKey{}).(map[string]bool)
+		if ignored[api.UUID] || api.IsDisable {
+			continue
+		}
 		//筛去api本身
 		if api.UUID == uuid {
 			continue
@@ -2440,4 +2482,21 @@ func (a *apiService) isServiceOnline(namespaceId int, clusterName, serviceName s
 		isOnline = true
 	}
 	return isOnline, serviceID
+}
+
+// A transaction uses a single connection; keep reads sequential inside it.
+func (a *apiService) batchRead(ctx context.Context, reads ...func() error) error {
+	if a.apiStore.IsTxCtx(ctx) {
+		for _, read := range reads {
+			if err := read(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	g, _ := errgroup.WithContext(ctx)
+	for _, read := range reads {
+		g.Go(read)
+	}
+	return g.Wait()
 }

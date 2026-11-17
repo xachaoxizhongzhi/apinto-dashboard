@@ -285,6 +285,10 @@ export class EoIntelligentPluginListComponent implements OnInit {
   }
 
   editData (value:any) {
+    if (this.moduleName === 'upstream') {
+      this.router.navigate(['/template/upstream/detail', value.data.id])
+      return
+    }
     this.modalRef = this.modalService.create({
       nzTitle: `编辑${this.pluginName}`,
       nzWidth: MODAL_NORMAL_SIZE,

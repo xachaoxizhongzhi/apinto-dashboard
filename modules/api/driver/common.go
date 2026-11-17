@@ -283,6 +283,22 @@ func toApinto(name, desc string, disable bool, protocols, method []string, reque
 		}
 	}
 	appendData["plugins"] = plg
+	// EOSC cannot discover dependencies inside interface{} plugin configs.
+	contracts := []string{}
+	for _, p := range plugins {
+		if p.Name != "http_to_kitex" {
+			continue
+		}
+		var cfg struct {
+			Contract string `json:"contract"`
+		}
+		if json.Unmarshal([]byte(p.Config), &cfg) == nil && cfg.Contract != "" {
+			contracts = append(contracts, cfg.Contract)
+		}
+	}
+	if len(contracts) > 0 {
+		appendData["contracts"] = contracts
+	}
 
 	return &v1.RouterConfig{
 		Name:        name,

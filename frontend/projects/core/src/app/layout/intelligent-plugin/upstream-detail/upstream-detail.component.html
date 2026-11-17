@@ -1,0 +1,133 @@
+<section class="upstream-detail">
+  <div class="desc-block detail-header pl-btnbase pr-btnrbase py-btnybase border-0 border-b border-solid border-BORDER">
+    <section class="flex items-center min-w-0">
+      <button eo-ng-button class="mr-btnbase" routerLink="/template/upstream">返回</button>
+      <span class="font-bold truncate" [title]="title || name">{{ title || name }}</span>
+    </section>
+    <button *ngIf="tab === 0" eo-ng-button (click)="publishSettings()" [disabled]="busy || !ready">发布管理</button>
+  </div>
+  <eo-ng-tabs [nzSelectedIndex]="tab" (nzSelectedIndexChange)="selectTab($event)" [nzOptions]="tabs"></eo-ng-tabs>
+  <div class="detail-content">
+    <div class="error-message" *ngIf="error && !updateOpen && !publishOpen" role="alert">{{ error }}</div>
+    <div [hidden]="tab !== 0">
+      <div class="settings" *ngIf="ready">
+        <formily2-react-wrapper #settings [renderSchema]="schema" [editPage]="true" [initFormValue]="values" [driverSelectOptions]="drivers"></formily2-react-wrapper>
+        <div class="settings-actions">
+          <button eo-ng-button class="ant-btn-primary" [disabled]="busy || !ready" [nzLoading]="busy" (click)="saveSettings()">保存设置</button>
+          <button eo-ng-button routerLink="/template/upstream">取消</button>
+        </div>
+      </div>
+    </div>
+    <div [hidden]="tab !== 1">
+      <div class="list-header contract-toolbar pl-btnbase pr-btnrbase py-btnybase">
+        <div class="actions">
+          <button eo-ng-button class="ant-btn-primary" [disabled]="busy || dirty" (click)="openUpdate()">更新契约</button>
+          <button eo-ng-button [disabled]="busy || historical || !currentVersion || dirty" (click)="publishOpen=true">发布契约</button>
+        </div>
+        <span class="muted">更新后同步 API 草稿，发布后生效</span>
+      </div>
+      <nz-empty *ngIf="!currentVersion" class="contract-empty" nzNotFoundContent="暂无契约，请点击「更新契约」上传或解析 ZIP 文件"></nz-empty>
+      <ng-container *ngIf="currentVersion">
+        <div class="contract-content">
+          <div class="version-row">
+            <span>契约版本：</span>
+            <eo-ng-select class="version-select" [ngModel]="selectedVersion" (ngModelChange)="changeVersion($event)" [nzOptions]="versionOptions" [nzDisabled]="busy"></eo-ng-select>
+            <button eo-ng-button *ngIf="historical" [disabled]="busy" (click)="restore()">恢复到草稿</button>
+          </div>
+          <p class="revision muted">SHA256：<span>{{ contract.revision }}</span></p>
+          <p *ngIf="historical" class="muted">正在查看历史快照，恢复到草稿并发布后生效。</p>
+          <div class="files">
+            <aside aria-label="契约文件">
+              <div class="file-heading">契约文件 <span class="muted">({{ paths.length }})</span></div>
+              <button *ngFor="let path of paths" [class.selected]="selectedPath === path" [attr.aria-pressed]="selectedPath === path" [disabled]="busy" (click)="selectPath(path)" [title]="path">
+                <span>{{ path }}</span>
+              </button>
+            </aside>
+            <div class="editor">
+              <div class="editor-title"><span class="truncate" [title]="selectedPath">{{ selectedPath }}</span><button eo-ng-button [disabled]="busy || historical || !dirty" (click)="saveFile()">保存文件</button></div>
+              <textarea eo-ng-input aria-label="Thrift 文件内容" spellcheck="false" [(ngModel)]="content" [readOnly]="historical || busy"></textarea>
+            </div>
+          </div>
+          <div class="api-heading">契约方法 <span class="muted">({{ contract.apis.length }})</span></div>
+          <p class="muted">展示当前契约版本快照；未关联 API 的无 HTTP 注解方法按更新选项展示，已关联的方法保留展示。已移除的 API 保留展示以便发布禁用状态。</p>
+        </div>
+        <div class="list-content">
+          <eo-ng-apinto-table [nzThead]="apiColumns" [nzTbody]="apiCells" [nzData]="apiRows" [nzNoScroll]="true" [nzMaxOperatorButton]="1"></eo-ng-apinto-table>
+        </div>
+      </ng-container>
+      <div class="contract-content" *ngIf="publishResults.length">
+        <div class="api-heading">最近一次发布结果</div>
+        <p *ngFor="let result of publishResults" [class.error-message]="!result.Status">{{ result.ClusterEnv }} / {{ result.APIName }}：{{ result.Status ? '成功' : result.Result }}</p>
+      </div>
+    </div>
+  </div>
+</section>
+<nz-modal [(nzVisible)]="updateOpen" nzTitle="更新契约" [nzWidth]="600" [nzOkLoading]="busy" [nzCancelDisabled]="busy" [nzClosable]="!busy" [nzMaskClosable]="false" (nzOnCancel)="updateOpen=false" (nzOnOk)="update()">
+  <ng-container *nzModalContent>
+    <form nz-form [nzNoColon]="true" autocomplete="off">
+      <nz-form-item>
+        <nz-form-label [nzSpan]="6">更新方式：</nz-form-label>
+        <nz-form-control [nzSpan]="17"><eo-ng-radio-group name="mode" [(ngModel)]="mode" [nzOptions]="updateModes" [nzDisabled]="busy"></eo-ng-radio-group></nz-form-control>
+      </nz-form-item>
+      <nz-form-item *ngIf="mode === 'url'">
+        <nz-form-label [nzSpan]="6" nzFor="contract-url">ZIP 下载链接：</nz-form-label>
+        <nz-form-control [nzSpan]="17"><input eo-ng-input id="contract-url" name="url" [(ngModel)]="url" [disabled]="busy" placeholder="请输入 ZIP 下载链接" class="contract-input" /></nz-form-control>
+      </nz-form-item>
+      <nz-form-item *ngIf="mode === 'upload'">
+        <nz-form-label [nzSpan]="6">契约文件：</nz-form-label>
+        <nz-form-control [nzSpan]="17">
+          <input #fileInput hidden type="file" accept=".zip,application/zip" [disabled]="busy" (change)="chooseFile($event)" />
+          <button eo-ng-button type="button" [disabled]="busy" (click)="fileInput.click()">选择文件</button>
+          <div *ngIf="file" class="selected-file"><span>{{ file.name }}</span><button eo-ng-button nzType="text" type="button" [disabled]="busy" (click)="file=null; fileInput.value=''">移除</button></div>
+        </nz-form-control>
+      </nz-form-item>
+      <nz-form-item>
+        <nz-form-control [nzOffset]="6" [nzSpan]="17">
+          <label eo-ng-checkbox name="includeUnannotated" [(ngModel)]="includeUnannotated" [nzDisabled]="busy">解析无 HTTP 注解的方法</label>
+        </nz-form-control>
+      </nz-form-item>
+      <nz-form-item class="mb-0">
+        <nz-form-control [nzOffset]="6" [nzSpan]="17">
+          <div class="ant-form-item-extra">每次上传完整 ZIP，最大 16 MiB，仅包含 .thrift 文件及其目录。移除的接口会生成禁用草稿。</div>
+          <div class="ant-form-item-explain-error" *ngIf="error" role="alert">{{ error }}</div>
+        </nz-form-control>
+      </nz-form-item>
+    </form>
+  </ng-container>
+</nz-modal>
+<nz-modal [(nzVisible)]="publishOpen" nzTitle="发布契约 API" [nzWidth]="600" [nzOkLoading]="busy" [nzCancelDisabled]="busy" [nzClosable]="!busy" [nzMaskClosable]="false" (nzOnCancel)="publishOpen=false" (nzOnOk)="publish()">
+  <ng-container *nzModalContent>
+    <form nz-form [nzNoColon]="true">
+      <nz-form-item>
+        <nz-form-label [nzSpan]="6">发布集群：</nz-form-label>
+        <nz-form-control [nzSpan]="17"><eo-ng-select class="contract-input" name="clusters" nzMode="multiple" nzPlaceHolder="请选择集群" [(ngModel)]="selectedClusters" [nzOptions]="clusterOptions" [nzDisabled]="busy"></eo-ng-select></nz-form-control>
+      </nz-form-item>
+      <nz-form-item class="mb-0"><nz-form-control [nzOffset]="6" [nzSpan]="17">
+        <div class="ant-form-item-extra">发布当前契约关联的全部 API，包括已移除接口的禁用配置。请先发布上游并启用 Kitex 转换插件。</div>
+        <div class="ant-form-item-explain-error" *ngIf="error" role="alert">{{ error }}</div>
+      </nz-form-control></nz-form-item>
+    </form>
+  </ng-container>
+</nz-modal>
+
+<nz-modal [(nzVisible)]="manualOpen" nzTitle="配置 API" [nzWidth]="600" [nzOkLoading]="busy" [nzCancelDisabled]="busy" [nzClosable]="!busy" [nzMaskClosable]="false" (nzOnCancel)="manualOpen=false" (nzOnOk)="createManualAPI()">
+  <ng-container *nzModalContent>
+    <form nz-form [nzNoColon]="true" autocomplete="off">
+      <nz-form-item>
+        <nz-form-label [nzSpan]="6">契约：</nz-form-label>
+        <nz-form-control [nzSpan]="17">{{ manualAPI?.contract }}</nz-form-control>
+      </nz-form-item>
+      <nz-form-item>
+        <nz-form-label [nzSpan]="6">HTTP 方法：</nz-form-label>
+        <nz-form-control [nzSpan]="17"><eo-ng-select class="contract-input" name="manualMethod" [(ngModel)]="manualMethod" [nzOptions]="httpMethods" [nzDisabled]="busy"></eo-ng-select></nz-form-control>
+      </nz-form-item>
+      <nz-form-item>
+        <nz-form-label [nzSpan]="6" nzFor="manual-path">请求路径：</nz-form-label>
+        <nz-form-control [nzSpan]="17"><input eo-ng-input id="manual-path" name="manualPath" class="contract-input" [(ngModel)]="manualPath" [disabled]="busy" placeholder="请输入以 / 开头的路径" /></nz-form-control>
+      </nz-form-item>
+      <nz-form-item class="mb-0"><nz-form-control [nzOffset]="6" [nzSpan]="17">
+        <div class="ant-form-item-explain-error" *ngIf="error" role="alert">{{ error }}</div>
+      </nz-form-control></nz-form-item>
+    </form>
+  </ng-container>
+</nz-modal>
